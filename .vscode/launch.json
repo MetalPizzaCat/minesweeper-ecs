@@ -7,15 +7,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'minesweeper'",
+            "name": "Debug executable 'minesweeper-ecs'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=minesweeper",
-                    "--package=minesweeper"
+                    "--bin=minesweeper-ecs",
+                    "--package=minesweeper-ecs"
                 ],
                 "filter": {
-                    "name": "minesweeper",
+                    "name": "minesweeper-ecs",
                     "kind": "bin"
                 }
             },
@@ -25,16 +25,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'minesweeper'",
+            "name": "Debug unit tests in executable 'minesweeper-ecs'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=minesweeper",
-                    "--package=minesweeper"
+                    "--bin=minesweeper-ecs",
+                    "--package=minesweeper-ecs"
                 ],
                 "filter": {
-                    "name": "minesweeper",
+                    "name": "minesweeper-ecs",
                     "kind": "bin"
                 }
             },
