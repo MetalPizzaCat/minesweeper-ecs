@@ -8,6 +8,7 @@ use specs::{
 };
 
 use rand::distributions::{Distribution, Uniform};
+use std::time::{Duration, SystemTime};
 
 ///Defines the parent of the drop down menu items. this is the thing that gets unwrapped
 #[derive(Clone, Debug, PartialEq, Component, Default)]
@@ -33,6 +34,7 @@ fn generate_grid(area_size: usize, bomb_count: u32) -> Vec<Vec<Field>> {
 
     let mut bomb_count = bomb_count;
     let die = Uniform::from(0..area_size);
+
     //generate all bombs
     //we simply pick a random position and then if the position is taken
     // we move diagonally to the left bottom until we hit a good spot
@@ -201,7 +203,7 @@ fn check_mines(grid: &mut Vec<Vec<Field>>, area_size: usize) -> bool {
 fn main() -> Result<(), String> {
     let area_size: usize = 10;
     let controls_panel_size: u32 = 100;
-
+    
     let (mut world, sdl, video_subsystem, ttf_context, mut canvas, mut game) = setup::setup(
         "Rust Minesweeper by MetalPizzaCat".to_owned(),
         Some(Vector2::new(
@@ -264,6 +266,7 @@ fn main() -> Result<(), String> {
     let total_mine_count = 2;
     let mut mines_left = total_mine_count;
     let mut flag_count: i32 = 0;
+    let mut time: i32 = 0;
 
     let mut grid = generate_grid(10, total_mine_count);
     let mut buttons: Vec<Vec<Entity>> = Vec::new();
@@ -365,6 +368,7 @@ fn main() -> Result<(), String> {
         .with(Renderable::new(true, layers::RenderLayers::Menu as u32))
         .build();
 
+        let mut now = SystemTime::now();
     'game: loop {
         for event in event_pump.poll_iter() {
             match event {
@@ -424,6 +428,15 @@ fn main() -> Result<(), String> {
         //lock frames to run at 30 fps
         //this is minesweeper, why would you want more?
         ::std::thread::sleep(std::time::Duration::new(0, 1_000_000_000u32 / 30));
+        if let Ok(dur) = now.elapsed() {
+            if dur.as_secs_f32() >= 1.0 {
+                time += 1;
+                now = SystemTime::now();
+            }
+            if let Some(text) = world.write_component::<Text>().get_mut(timer) {
+                text.text = time.to_string()
+            }
+        }
     }
     Ok(())
 }
