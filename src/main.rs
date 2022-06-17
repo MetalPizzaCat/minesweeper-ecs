@@ -138,14 +138,18 @@ fn reveal_block(
     reveal_block(point + Vector2::new(1, 0), grid, world, buttons);
 }
 
+///Attempts to flag a block
+/// If fails returns false
 fn flag_block(
     point: Vector2<i32>,
     grid: &mut Vec<Vec<Field>>,
     world: &mut World,
     buttons: &Vec<Vec<Entity>>,
-) {
+    flag_count: &mut i32,
+    total_mine_count: i32,
+) -> bool {
     if point.x < 0 || point.x >= grid.len() as i32 || point.y < 0 || point.y >= grid.len() as i32 {
-        return;
+        return false;
     }
 
     let x = point.x as usize;
@@ -153,8 +157,12 @@ fn flag_block(
     //if tile was revealed then we either know it's not a bomb or we lost the game
     //no point in flagging it either way
     if grid[x][y].revealed {
-        return;
+        return false;
     }
+    if !grid[x][y].flagged && *flag_count >= total_mine_count {
+        return false;
+    }
+
     if let Some(sprite) = world.write_component::<Sprite>().get_mut(buttons[x][y]) {
         if grid[x][y].flagged {
             sprite.name = "tile_default".to_owned();
@@ -172,6 +180,8 @@ fn flag_block(
         }
     }
     grid[x][y].flagged = !grid[x][y].flagged;
+    *flag_count += if grid[x][y].flagged { 1 } else { -1 };
+    return true;
 }
 
 fn end_game(win: bool) {}
@@ -190,7 +200,7 @@ fn check_mines(grid: &mut Vec<Vec<Field>>, area_size: usize) -> bool {
 
 fn main() -> Result<(), String> {
     let area_size: usize = 10;
-    let controls_panel_size: u32 = 200;
+    let controls_panel_size: u32 = 100;
 
     let (mut world, sdl, video_subsystem, ttf_context, mut canvas, mut game) = setup::setup(
         "Rust Minesweeper by MetalPizzaCat".to_owned(),
@@ -247,11 +257,13 @@ fn main() -> Result<(), String> {
     world.register::<Tile>();
     world.insert(ui::MouseData::default());
     let font = ttf_context
-        .load_font("./assets/fonts/Roboto-Medium.ttf", 22)
+        .load_font("./assets/fonts/Roboto-Medium.ttf", 50)
         .unwrap();
 
+    //game variables
     let total_mine_count = 2;
     let mut mines_left = total_mine_count;
+    let mut flag_count: i32 = 0;
 
     let mut grid = generate_grid(10, total_mine_count);
     let mut buttons: Vec<Vec<Entity>> = Vec::new();
@@ -299,6 +311,60 @@ fn main() -> Result<(), String> {
         }
     }
 
+    world
+        .create_entity()
+        .with(Position { x: 0, y: 0 })
+        .with(Rectangle {
+            width: area_size as i32 * 50,
+            height: controls_panel_size as i32,
+        })
+        .with(Colored {
+            color: sdl2::pixels::Color::RGB(192, 192, 192),
+        })
+        .with(Renderable::new(true, layers::RenderLayers::Menu as u32))
+        .build();
+
+    let timer = world
+        .create_entity()
+        .with(Position { x: 50, y: 10 })
+        .with(Rectangle {
+            width: 100,
+            height: 50,
+        })
+        .with(Colored {
+            color: sdl2::pixels::Color::RGB(0, 0, 0),
+        })
+        .with(Text {
+            text: "999".to_owned(),
+            color: sdl2::pixels::Color::RED,
+            visible: true,
+            offset: Vector2::new(10, 0),
+        })
+        .with(Renderable::new(true, layers::RenderLayers::Menu as u32))
+        .build();
+
+    let mine_count = world
+        .create_entity()
+        .with(Position {
+            x: area_size as i32 * 50 - 150,
+            y: 10,
+        })
+        .with(Rectangle {
+            width: 100,
+            height: 50,
+        })
+        .with(Colored {
+            color: sdl2::pixels::Color::RGB(0, 0, 0),
+        })
+        .with(Text {
+            text: total_mine_count.to_string(),
+            color: sdl2::pixels::Color::RED,
+            visible: true,
+            offset: Vector2::new(10, 0),
+        })
+        .with(Renderable::new(true, layers::RenderLayers::Menu as u32))
+        .build();
+
     'game: loop {
         for event in event_pump.poll_iter() {
             match event {
@@ -328,13 +394,21 @@ fn main() -> Result<(), String> {
                         }
                         sdl2::mouse::MouseButton::Right => {
                             //this is where we have to put flag on top of the thing
-                            flag_block(
+                            if flag_block(
                                 Vector2::new(y / 50, x / 50),
                                 &mut grid,
                                 &mut world,
                                 &buttons,
-                            );
-                            if check_mines(&mut grid, area_size){
+                                &mut flag_count,
+                                total_mine_count as i32,
+                            ) {
+                                if let Some(text) =
+                                    world.write_component::<Text>().get_mut(mine_count)
+                                {
+                                    text.text = (total_mine_count as i32 - flag_count).to_string()
+                                }
+                            }
+                            if check_mines(&mut grid, area_size) {
                                 println!("You win!");
                                 return Ok(());
                             }
