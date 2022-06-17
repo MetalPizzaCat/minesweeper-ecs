@@ -14,8 +14,6 @@ use rand::distributions::{Distribution, Uniform};
 #[storage(VecStorage)]
 pub struct Tile {
     pub position: Vector2<usize>,
-    pub value: i32,
-    pub is_bomb: bool,
     pub revealed: bool,
 }
 #[derive(Default, Clone)]
@@ -24,6 +22,7 @@ struct Field {
     bomb: bool,
     border: bool,
     revealed: bool,
+    flagged: bool,
 }
 
 fn generate_grid(area_size: usize, bomb_count: u32) -> Vec<Vec<Field>> {
@@ -117,7 +116,11 @@ fn reveal_block(
             text.visible = true;
         }
         if let Some(sprite) = world.write_component::<Sprite>().get_mut(buttons[x][y]) {
-            sprite.name = "tile_".to_owned() + grid[x][y].value.to_string().as_str();
+            if grid[x][y].bomb {
+                sprite.name = "tile_bomb".to_owned();
+            } else {
+                sprite.name = "tile_".to_owned() + grid[x][y].value.to_string().as_str();
+            }
         }
         //once we reveal tile it stops being a button
         world.write_component::<ui::Button>().remove(buttons[x][y]);
@@ -135,11 +138,66 @@ fn reveal_block(
     reveal_block(point + Vector2::new(1, 0), grid, world, buttons);
 }
 
+fn flag_block(
+    point: Vector2<i32>,
+    grid: &mut Vec<Vec<Field>>,
+    world: &mut World,
+    buttons: &Vec<Vec<Entity>>,
+) {
+    if point.x < 0 || point.x >= grid.len() as i32 || point.y < 0 || point.y >= grid.len() as i32 {
+        return;
+    }
+
+    let x = point.x as usize;
+    let y = point.y as usize;
+    //if tile was revealed then we either know it's not a bomb or we lost the game
+    //no point in flagging it either way
+    if grid[x][y].revealed {
+        return;
+    }
+    if let Some(sprite) = world.write_component::<Sprite>().get_mut(buttons[x][y]) {
+        if grid[x][y].flagged {
+            sprite.name = "tile_default".to_owned();
+        } else {
+            sprite.name = "tile_flag".to_owned();
+        }
+    }
+    if let Some(button) = world.write_component::<ui::Button>().get_mut(buttons[x][y]) {
+        if !grid[x][y].flagged {
+            button.hovered_over_texture_name = Some("tile_flag".to_owned());
+            button.normal_texture_name = Some("tile_flag".to_owned());
+        } else {
+            button.hovered_over_texture_name = Some("tile_selected".to_owned());
+            button.normal_texture_name = Some("tile_default".to_owned());
+        }
+    }
+    grid[x][y].flagged = !grid[x][y].flagged;
+}
+
+fn end_game(win: bool) {}
+
+///Checks if all mines have been flagged
+fn check_mines(grid: &mut Vec<Vec<Field>>, area_size: usize) -> bool {
+    for i in 0..area_size {
+        for j in 0..area_size {
+            if grid[i][j].bomb && !grid[i][j].flagged {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn main() -> Result<(), String> {
     let area_size: usize = 10;
+    let controls_panel_size: u32 = 200;
+
     let (mut world, sdl, video_subsystem, ttf_context, mut canvas, mut game) = setup::setup(
-        "Rust Minesweeper".to_owned(),
-        Some(Vector2::new(area_size as u32 * 50, area_size as u32 * 50)),
+        "Rust Minesweeper by MetalPizzaCat".to_owned(),
+        Some(Vector2::new(
+            area_size as u32 * 50,
+            area_size as u32 * 50 + controls_panel_size,
+        )),
     )?;
     let mut dispatcher = DispatcherBuilder::new()
         .with(ui::ButtonUpdateSystem, "button_update_system", &[])
@@ -149,6 +207,7 @@ fn main() -> Result<(), String> {
 
     let mut texture_creator = canvas.texture_creator();
     let mut texture_manager = TextureManager::new(&texture_creator)?;
+    //load textures
     texture_manager.load(
         Vector4::new(0, 0, 16, 16),
         "tile_default".to_owned(),
@@ -164,6 +223,19 @@ fn main() -> Result<(), String> {
         "tile_question".to_owned(),
         "./assets/minesweeper.png".to_owned(),
     )?;
+    texture_manager.load(
+        Vector4::new(0, 64, 16, 16),
+        "tile_bomb".to_owned(),
+        "./assets/minesweeper.png".to_owned(),
+    )?;
+    texture_manager.load(
+        Vector4::new(0, 32, 16, 16),
+        "tile_flag".to_owned(),
+        "./assets/minesweeper.png".to_owned(),
+    )?;
+    //for some reason in the original file for minesweeper it went from 8 to 0 (top to bottom),
+    // i decided to keep it that way so we have to do a bit of a weird loop
+    //can you even get an 8?
     for i in (0..=8).rev() {
         texture_manager.load(
             Vector4::new(0, i * 16 + 128, 16, 16),
@@ -171,13 +243,17 @@ fn main() -> Result<(), String> {
             "./assets/minesweeper.png".to_owned(),
         )?;
     }
-
+    //register components necessary for ECS world to function
     world.register::<Tile>();
     world.insert(ui::MouseData::default());
     let font = ttf_context
         .load_font("./assets/fonts/Roboto-Medium.ttf", 22)
         .unwrap();
-    let mut grid = generate_grid(10, 10);
+
+    let total_mine_count = 2;
+    let mut mines_left = total_mine_count;
+
+    let mut grid = generate_grid(10, total_mine_count);
     let mut buttons: Vec<Vec<Entity>> = Vec::new();
     //generate button entities
     for i in 0..area_size {
@@ -186,7 +262,10 @@ fn main() -> Result<(), String> {
             buttons[i].push(
                 ui::make_button_base(
                     &mut world,
-                    Vector2::new(j as i32 * 50 + 2, i as i32 * 50 + 2),
+                    Vector2::new(
+                        j as i32 * 50 + 2,
+                        i as i32 * 50 + 2 + controls_panel_size as i32,
+                    ),
                     Vector2::new(45, 45),
                     Some(ui::Button {
                         hovered_over: false,
@@ -204,21 +283,9 @@ fn main() -> Result<(), String> {
                     }),
                     sdl2::pixels::Color::RGBA(255, 255, 255, 120),
                     layers::RenderLayers::Menu,
-                ) /*
-                .with(Text {
-                    text: if grid[i][j].bomb {
-                        "B".to_owned()
-                    } else {
-                        grid[i][j].value.to_string()
-                    },
-                    color: sdl2::pixels::Color::BLACK,
-                    visible: grid[i][j].bomb,
-                    offset: Vector2::new(20, 15),
-                })*/
+                )
                 .with(Tile {
                     position: Vector2::new(i, j),
-                    value: grid[i][j].value,
-                    is_bomb: grid[i][j].bomb,
                     revealed: false,
                 })
                 .with(Sprite {
@@ -244,15 +311,35 @@ fn main() -> Result<(), String> {
                 Event::MouseButtonDown {
                     x, y, mouse_btn, ..
                 } => {
-                    //x and y are swapped because i accidentally swapped them in memory
-                    reveal_block(
-                        Vector2::new(y / 50, x / 50),
-                        &mut grid,
-                        &mut world,
-                        &buttons,
-                    );
-                    if grid[(y / 50) as usize][(x / 50) as usize].bomb {
-                        return Ok(());
+                    //we have to offset y due to the fact that controls are on top
+                    let y = y - controls_panel_size as i32;
+                    match mouse_btn {
+                        sdl2::mouse::MouseButton::Left => {
+                            //x and y are swapped because i accidentally swapped them in memory
+                            reveal_block(
+                                Vector2::new(y / 50, x / 50),
+                                &mut grid,
+                                &mut world,
+                                &buttons,
+                            );
+                            if grid[(y / 50) as usize][(x / 50) as usize].bomb {
+                                return Ok(());
+                            }
+                        }
+                        sdl2::mouse::MouseButton::Right => {
+                            //this is where we have to put flag on top of the thing
+                            flag_block(
+                                Vector2::new(y / 50, x / 50),
+                                &mut grid,
+                                &mut world,
+                                &buttons,
+                            );
+                            if check_mines(&mut grid, area_size){
+                                println!("You win!");
+                                return Ok(());
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 _ => {}
@@ -261,7 +348,7 @@ fn main() -> Result<(), String> {
         dispatcher.dispatch(&world);
         render_game(&world, &mut canvas, &texture_manager, &mut game, &font)?;
         //lock frames to run at 30 fps
-        //this is minesweeper why would you want more?
+        //this is minesweeper, why would you want more?
         ::std::thread::sleep(std::time::Duration::new(0, 1_000_000_000u32 / 30));
     }
     Ok(())
