@@ -1,6 +1,6 @@
 use game_oxide_framework::*;
 use game_oxide_framework::{components::*, game::Game, render::*, texture_manager::*};
-use nalgebra::Vector2;
+use nalgebra::{Vector2, Vector4};
 use sdl2::event::Event;
 use specs::{
     Builder, Component, Dispatcher, DispatcherBuilder, Entity, EntityBuilder, NullStorage, Read,
@@ -18,30 +18,6 @@ pub struct Tile {
     pub is_bomb: bool,
     pub revealed: bool,
 }
-
-///Render everything to the screen
-pub fn render_game(
-    world: &World,
-    canvas: &mut sdl2::render::Canvas<sdl2::video::Window>,
-    textures: &TextureManager,
-    game: &mut Game,
-    font: &sdl2::ttf::Font,
-) -> Result<(), String> {
-    canvas.set_draw_color(sdl2::pixels::Color::RGBA(0, 0, 0, 255));
-    canvas.clear();
-    render_fill(canvas, world.system_data(), game)?;
-    render_textures(canvas, textures, world.system_data(), game)?;
-    render_text(
-        canvas,
-        font,
-        &canvas.texture_creator(),
-        world.system_data(),
-        game,
-    )?;
-    canvas.present();
-    Ok(())
-}
-
 #[derive(Default, Clone)]
 struct Field {
     value: i32,
@@ -66,7 +42,7 @@ fn generate_grid(area_size: usize, bomb_count: u32) -> Vec<Vec<Field>> {
         let mut point: Vector2<usize> = Vector2::new(die.sample(&mut rng), die.sample(&mut rng));
         while grid[point.x][point.y].bomb {
             //to prevent going over the border because line was randomly generated
-            if point.x > area_size || point.y > area_size {
+            if point.x >= area_size || point.y >= area_size {
                 point.x = 1;
                 point.y = 0;
             } else {
@@ -94,7 +70,7 @@ fn generate_grid(area_size: usize, bomb_count: u32) -> Vec<Vec<Field>> {
                         if hor >= area_size as i32 || hor < 0 {
                             continue;
                         }
-                        //we ignore the fact that the tile is a bomb and still add value 
+                        //we ignore the fact that the tile is a bomb and still add value
                         //because bomb with value is still a bomb, duh
                         grid[vert as usize][hor as usize].value += 1;
                         //mark this tile as border
@@ -108,6 +84,12 @@ fn generate_grid(area_size: usize, bomb_count: u32) -> Vec<Vec<Field>> {
     }
     grid
 }
+
+///Version of sprite that uses one texture but allows to access various points of it
+/// Uses tile names
+#[derive(Clone, Debug, PartialEq, Component, Default)]
+#[storage(VecStorage)]
+pub struct TileSetSprite {}
 
 ///Reveal the tile and all neighboring 0 tiles using flood algorithm
 fn reveal_block(
@@ -134,6 +116,11 @@ fn reveal_block(
         if let Some(text) = world.write_component::<Text>().get_mut(buttons[x][y]) {
             text.visible = true;
         }
+        if let Some(sprite) = world.write_component::<Sprite>().get_mut(buttons[x][y]) {
+            sprite.name = "tile_".to_owned() + grid[x][y].value.to_string().as_str();
+        }
+        //once we reveal tile it stops being a button
+        world.write_component::<ui::Button>().remove(buttons[x][y]);
         //mark tile as visited
         grid[x][y].revealed = true;
     }
@@ -162,6 +149,28 @@ fn main() -> Result<(), String> {
 
     let mut texture_creator = canvas.texture_creator();
     let mut texture_manager = TextureManager::new(&texture_creator)?;
+    texture_manager.load(
+        Vector4::new(0, 0, 16, 16),
+        "tile_default".to_owned(),
+        "./assets/minesweeper.png".to_owned(),
+    )?;
+    texture_manager.load(
+        Vector4::new(0, 16, 16, 16),
+        "tile_selected".to_owned(),
+        "./assets/minesweeper.png".to_owned(),
+    )?;
+    texture_manager.load(
+        Vector4::new(0, 48, 16, 16),
+        "tile_question".to_owned(),
+        "./assets/minesweeper.png".to_owned(),
+    )?;
+    for i in (0..=8).rev() {
+        texture_manager.load(
+            Vector4::new(0, i * 16 + 128, 16, 16),
+            "tile_".to_owned() + (8 - i).to_string().as_str(),
+            "./assets/minesweeper.png".to_owned(),
+        )?;
+    }
 
     world.register::<Tile>();
     world.insert(ui::MouseData::default());
@@ -181,10 +190,10 @@ fn main() -> Result<(), String> {
                     Vector2::new(45, 45),
                     Some(ui::Button {
                         hovered_over: false,
-                        hovered_over_texture_name: None,
+                        hovered_over_texture_name: Some("tile_selected".to_owned()),
                         hovered_over_text: None,
                         hovered_over_color: Some(sdl2::pixels::Color::RGBA(255, 0, 255, 120)),
-                        normal_texture_name: None,
+                        normal_texture_name: Some("tile_default".to_owned()),
                         normal_text: None,
                         normal_color: Some(sdl2::pixels::Color::RGBA(
                             if grid[i][j].border { 0 } else { 255 },
@@ -195,7 +204,7 @@ fn main() -> Result<(), String> {
                     }),
                     sdl2::pixels::Color::RGBA(255, 255, 255, 120),
                     layers::RenderLayers::Menu,
-                )
+                ) /*
                 .with(Text {
                     text: if grid[i][j].bomb {
                         "B".to_owned()
@@ -205,12 +214,18 @@ fn main() -> Result<(), String> {
                     color: sdl2::pixels::Color::BLACK,
                     visible: grid[i][j].bomb,
                     offset: Vector2::new(20, 15),
-                })
+                })*/
                 .with(Tile {
                     position: Vector2::new(i, j),
                     value: grid[i][j].value,
                     is_bomb: grid[i][j].bomb,
                     revealed: false,
+                })
+                .with(Sprite {
+                    name: "tile_default".to_owned(),
+                    source_rect: Some(Vector4::new(0, 0, 16, 16)),
+                    size: Vector2::new(50, 50),
+                    visible: true,
                 })
                 .build(),
             );
@@ -236,6 +251,9 @@ fn main() -> Result<(), String> {
                         &mut world,
                         &buttons,
                     );
+                    if grid[(y / 50) as usize][(x / 50) as usize].bomb {
+                        return Ok(());
+                    }
                 }
                 _ => {}
             }
