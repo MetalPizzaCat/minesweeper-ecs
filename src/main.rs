@@ -1,14 +1,16 @@
 use game_oxide_framework::*;
-use game_oxide_framework::{components::*, game::Game, render::*, texture_manager::*};
+use game_oxide_framework::{components::*, render::*, texture_manager::*};
 use nalgebra::{Vector2, Vector4};
 use sdl2::event::Event;
 use specs::{
-    Builder, Component, Dispatcher, DispatcherBuilder, Entity, EntityBuilder, NullStorage, Read,
-    ReadStorage, System, VecStorage, World, WorldExt,
+    Builder, Component, DispatcherBuilder, Entity, NullStorage, VecStorage, World, WorldExt,
 };
 
 use rand::distributions::{Distribution, Uniform};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
+pub mod assets;
+pub mod minesweeper_ui;
+use minesweeper_ui::*;
 
 ///Defines the parent of the drop down menu items. this is the thing that gets unwrapped
 #[derive(Clone, Debug, PartialEq, Component, Default)]
@@ -24,6 +26,19 @@ struct Field {
     border: bool,
     revealed: bool,
     flagged: bool,
+}
+
+#[derive(Component, Default, Clone)]
+#[storage(NullStorage)]
+struct FaceButton;
+
+enum GameState {
+    ///Game is still happening
+    Active,
+    ///Player is browsing menues
+    Setup,
+    ///Player has either won or lost
+    Ended,
 }
 
 fn generate_grid(area_size: usize, bomb_count: u32) -> Vec<Vec<Field>> {
@@ -85,12 +100,6 @@ fn generate_grid(area_size: usize, bomb_count: u32) -> Vec<Vec<Field>> {
     }
     grid
 }
-
-///Version of sprite that uses one texture but allows to access various points of it
-/// Uses tile names
-#[derive(Clone, Debug, PartialEq, Component, Default)]
-#[storage(VecStorage)]
-pub struct TileSetSprite {}
 
 ///Reveal the tile and all neighboring 0 tiles using flood algorithm
 fn reveal_block(
@@ -186,7 +195,48 @@ fn flag_block(
     return true;
 }
 
-fn end_game(win: bool) {}
+fn end_game(
+    win: bool,
+    world: &mut World,
+    face: &Entity,
+    buttons: &Vec<Vec<Entity>>,
+    grid: &Vec<Vec<Field>>,
+    area_size: usize,
+) {
+    if let Some(button) = world.write_component::<ui::Button>().get_mut(*face) {
+        button.normal_texture_name = if win {
+            Some("face_win".to_owned())
+        } else {
+            Some("face_loose".to_owned())
+        }
+    }
+    //TODO: Replace with actual code
+    if !win {
+        //reveal all bombs
+        for i in 0..area_size {
+            for j in 0..area_size {
+                if grid[i][j].bomb {
+                    //update tile state so it would be drawn
+                    {
+                        if let Some(tile) = world.write_component::<Tile>().get_mut(buttons[i][j]) {
+                            tile.revealed = true;
+                        }
+                        if let Some(text) = world.write_component::<Text>().get_mut(buttons[i][j]) {
+                            text.visible = true;
+                        }
+                        if let Some(sprite) =
+                            world.write_component::<Sprite>().get_mut(buttons[i][j])
+                        {
+                            sprite.name = "tile_bomb".to_owned();
+                        }
+                        //once we reveal tile it stops being a button
+                        world.write_component::<ui::Button>().remove(buttons[i][j]);
+                    }
+                }
+            }
+        }
+    }
+}
 
 ///Checks if all mines have been flagged
 fn check_mines(grid: &mut Vec<Vec<Field>>, area_size: usize) -> bool {
@@ -200,87 +250,66 @@ fn check_mines(grid: &mut Vec<Vec<Field>>, area_size: usize) -> bool {
     true
 }
 
-fn main() -> Result<(), String> {
-    let area_size: usize = 10;
-    let controls_panel_size: u32 = 100;
-    
-    let (mut world, sdl, video_subsystem, ttf_context, mut canvas, mut game) = setup::setup(
-        "Rust Minesweeper by MetalPizzaCat".to_owned(),
-        Some(Vector2::new(
-            area_size as u32 * 50,
-            area_size as u32 * 50 + controls_panel_size,
-        )),
-    )?;
-    let mut dispatcher = DispatcherBuilder::new()
-        .with(ui::ButtonUpdateSystem, "button_update_system", &[])
-        .build();
-    ui::register_ui_components(&mut world);
-    let mut event_pump = sdl.event_pump().unwrap();
+fn make_text_box(
+    world: &mut World,
+    default_text: String,
+    layer: layers::RenderLayers,
+    location: Vector2<i32>,
+) -> Entity {
+    world
+        .create_entity()
+        .with(Position {
+            x: location.x,
+            y: location.y,
+        })
+        .with(Rectangle {
+            width: 100,
+            height: 50,
+        })
+        .with(Colored {
+            color: sdl2::pixels::Color::RGB(0, 0, 0),
+        })
+        .with(Text {
+            text: default_text,
+            color: sdl2::pixels::Color::RED,
+            visible: true,
+            offset: Vector2::new(10, 0),
+        })
+        .with(Renderable::new(true, layer as u32))
+        .build()
+}
 
-    let mut texture_creator = canvas.texture_creator();
-    let mut texture_manager = TextureManager::new(&texture_creator)?;
-    //load textures
-    texture_manager.load(
-        Vector4::new(0, 0, 16, 16),
-        "tile_default".to_owned(),
-        "./assets/minesweeper.png".to_owned(),
-    )?;
-    texture_manager.load(
-        Vector4::new(0, 16, 16, 16),
-        "tile_selected".to_owned(),
-        "./assets/minesweeper.png".to_owned(),
-    )?;
-    texture_manager.load(
-        Vector4::new(0, 48, 16, 16),
-        "tile_question".to_owned(),
-        "./assets/minesweeper.png".to_owned(),
-    )?;
-    texture_manager.load(
-        Vector4::new(0, 64, 16, 16),
-        "tile_bomb".to_owned(),
-        "./assets/minesweeper.png".to_owned(),
-    )?;
-    texture_manager.load(
-        Vector4::new(0, 32, 16, 16),
-        "tile_flag".to_owned(),
-        "./assets/minesweeper.png".to_owned(),
-    )?;
-    //for some reason in the original file for minesweeper it went from 8 to 0 (top to bottom),
-    // i decided to keep it that way so we have to do a bit of a weird loop
-    //can you even get an 8?
-    for i in (0..=8).rev() {
-        texture_manager.load(
-            Vector4::new(0, i * 16 + 128, 16, 16),
-            "tile_".to_owned() + (8 - i).to_string().as_str(),
-            "./assets/minesweeper.png".to_owned(),
-        )?;
+fn generate_game(
+    world: &mut World,
+    buttons: &mut Vec<Vec<Entity>>,
+    mine_count: u32,
+    area_size: usize,
+    controls_panel_size: i32,
+    bomb_display: &Vec<Entity>,
+) -> Result<Vec<Vec<Field>>, String> {
+    let mut grid = generate_grid(10, mine_count);
+
+    if buttons.len() > 0 {
+        for i in 0..area_size {
+            for j in 0..area_size {
+                if buttons[i].len() > 0 {
+                    world
+                        .delete_entity(buttons[i][j])
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
     }
-    //register components necessary for ECS world to function
-    world.register::<Tile>();
-    world.insert(ui::MouseData::default());
-    let font = ttf_context
-        .load_font("./assets/fonts/Roboto-Medium.ttf", 50)
-        .unwrap();
+    buttons.clear();
 
-    //game variables
-    let total_mine_count = 2;
-    let mut mines_left = total_mine_count;
-    let mut flag_count: i32 = 0;
-    let mut time: i32 = 0;
-
-    let mut grid = generate_grid(10, total_mine_count);
-    let mut buttons: Vec<Vec<Entity>> = Vec::new();
     //generate button entities
     for i in 0..area_size {
         buttons.push(Vec::new());
         for j in 0..area_size {
             buttons[i].push(
                 ui::make_button_base(
-                    &mut world,
-                    Vector2::new(
-                        j as i32 * 50 + 2,
-                        i as i32 * 50 + 2 + controls_panel_size as i32,
-                    ),
+                    world,
+                    Vector2::new(j as i32 * 50 + 2, i as i32 * 50 + 2 + controls_panel_size),
                     Vector2::new(45, 45),
                     Some(ui::Button {
                         hovered_over: false,
@@ -313,7 +342,47 @@ fn main() -> Result<(), String> {
             );
         }
     }
+    update_segmented_display(world, bomb_display, mine_count);
+    Ok(grid)
+}
 
+fn main() -> Result<(), String> {
+    let area_size: usize = 10;
+    let controls_panel_size: u32 = 100;
+    let (mut world, sdl, video_subsystem, ttf_context, mut canvas, mut game) = setup::setup(
+        "Rust Minesweeper by MetalPizzaCat".to_owned(),
+        Some(Vector2::new(
+            area_size as u32 * 50,
+            area_size as u32 * 50 + controls_panel_size,
+        )),
+    )?;
+    let mut dispatcher = DispatcherBuilder::new()
+        .with(ui::ButtonUpdateSystem, "button_update_system", &[])
+        .build();
+    ui::register_ui_components(&mut world);
+    let mut event_pump = sdl.event_pump().unwrap();
+
+    let mut texture_creator = canvas.texture_creator();
+    let mut texture_manager = TextureManager::new(&texture_creator)?;
+    assets::load_textures(&mut texture_manager)?;
+    //register components necessary for ECS world to function
+    world.register::<Tile>();
+    world.register::<FaceButton>();
+    world.insert(ui::MouseData::default());
+    let font = ttf_context
+        .load_font("./assets/fonts/Roboto-Medium.ttf", 50)
+        .unwrap();
+
+    let mut buttons: Vec<Vec<Entity>> = Vec::new();
+
+    //game variables
+    let total_mine_count = 10;
+    let mut mines_left = total_mine_count;
+    let mut flag_count: i32 = 0;
+    let mut time: i32 = 0;
+    let mut current_state: GameState = GameState::Active;
+
+    
     world
         .create_entity()
         .with(Position { x: 0, y: 0 })
@@ -327,48 +396,46 @@ fn main() -> Result<(), String> {
         .with(Renderable::new(true, layers::RenderLayers::Menu as u32))
         .build();
 
-    let timer = world
-        .create_entity()
-        .with(Position { x: 50, y: 10 })
-        .with(Rectangle {
-            width: 100,
-            height: 50,
-        })
-        .with(Colored {
-            color: sdl2::pixels::Color::RGB(0, 0, 0),
-        })
-        .with(Text {
-            text: "999".to_owned(),
-            color: sdl2::pixels::Color::RED,
-            visible: true,
-            offset: Vector2::new(10, 0),
-        })
-        .with(Renderable::new(true, layers::RenderLayers::Menu as u32))
-        .build();
+    let face = ui::make_button_base(
+        &mut world,
+        Vector2::new(
+            area_size as i32 * 50 / 2 - 25,
+            controls_panel_size as i32 / 2 - 25,
+        ),
+        Vector2::new(50, 50),
+        Some(ui::Button {
+            hovered_over: false,
+            hovered_over_texture_name: Some("face_hover".to_owned()),
+            hovered_over_text: None,
+            hovered_over_color: None,
+            normal_texture_name: Some("face_default".to_owned()),
+            normal_text: None,
+            normal_color: None,
+        }),
+        sdl2::pixels::Color::GREY,
+        layers::RenderLayers::Gameplay,
+    )
+    .with(FaceButton)
+    .with(Sprite {
+        name: "face_default".to_owned(),
+        source_rect: None,
+        size: Vector2::new(50, 50),
+        visible: true,
+    })
+    .build();
 
-    let mine_count = world
-        .create_entity()
-        .with(Position {
-            x: area_size as i32 * 50 - 150,
-            y: 10,
-        })
-        .with(Rectangle {
-            width: 100,
-            height: 50,
-        })
-        .with(Colored {
-            color: sdl2::pixels::Color::RGB(0, 0, 0),
-        })
-        .with(Text {
-            text: total_mine_count.to_string(),
-            color: sdl2::pixels::Color::RED,
-            visible: true,
-            offset: Vector2::new(10, 0),
-        })
-        .with(Renderable::new(true, layers::RenderLayers::Menu as u32))
-        .build();
-
-        let mut now = SystemTime::now();
+    let mine_display =
+        make_segmented_display(&mut world, Vector2::new(area_size as i32 * 50 - 200, 10));
+    let time_display = make_segmented_display(&mut world, Vector2::new(50, 10));
+    let mut grid: Vec<Vec<Field>> = generate_game(
+        &mut world,
+        &mut buttons,
+        total_mine_count,
+        area_size,
+        controls_panel_size as i32,
+        &mine_display
+    )?;
+    let mut now = SystemTime::now();
     'game: loop {
         for event in event_pump.poll_iter() {
             match event {
@@ -381,6 +448,22 @@ fn main() -> Result<(), String> {
                 Event::MouseButtonDown {
                     x, y, mouse_btn, ..
                 } => {
+                    if let Some(face) = ui::get_overlapping_component_with_type::<FaceButton>(
+                        Vector2::new(x, y),
+                        world.system_data(),
+                    ) {
+                        //restart the game
+                        grid = generate_game(
+                            &mut world,
+                            &mut buttons,
+                            total_mine_count,
+                            area_size,
+                            controls_panel_size as i32,
+                            &mine_display
+                        )?;
+                        time = 0;
+                        continue;
+                    }
                     //we have to offset y due to the fact that controls are on top
                     let y = y - controls_panel_size as i32;
                     match mouse_btn {
@@ -393,7 +476,7 @@ fn main() -> Result<(), String> {
                                 &buttons,
                             );
                             if grid[(y / 50) as usize][(x / 50) as usize].bomb {
-                                return Ok(());
+                                end_game(false, &mut world, &face, &buttons, &grid, area_size);
                             }
                         }
                         sdl2::mouse::MouseButton::Right => {
@@ -406,15 +489,14 @@ fn main() -> Result<(), String> {
                                 &mut flag_count,
                                 total_mine_count as i32,
                             ) {
-                                if let Some(text) =
-                                    world.write_component::<Text>().get_mut(mine_count)
-                                {
-                                    text.text = (total_mine_count as i32 - flag_count).to_string()
-                                }
+                                update_segmented_display(
+                                    &mut world,
+                                    &mine_display,
+                                    (total_mine_count as i32 - flag_count) as u32,
+                                );
                             }
                             if check_mines(&mut grid, area_size) {
-                                println!("You win!");
-                                return Ok(());
+                                end_game(true, &mut world, &face, &buttons, &grid, area_size);
                             }
                         }
                         _ => {}
@@ -433,9 +515,7 @@ fn main() -> Result<(), String> {
                 time += 1;
                 now = SystemTime::now();
             }
-            if let Some(text) = world.write_component::<Text>().get_mut(timer) {
-                text.text = time.to_string()
-            }
+            update_segmented_display(&mut world, &time_display, time as u32);
         }
     }
     Ok(())
